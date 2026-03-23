@@ -42,6 +42,7 @@ const FRED_KEY = loadSecret("fred-key");
 
 // ── In-Memory Cache ────────────────────────────────────────
 
+const MAX_CACHE_SIZE = 5_000;
 const cache = new Map<string, { data: unknown; expires: number }>();
 
 function getCached<T>(key: string): T | null {
@@ -54,6 +55,15 @@ function getCached<T>(key: string): T | null {
 }
 
 function setCache(key: string, data: unknown, ttlMs: number): void {
+  // LRU eviction: drop oldest 20% when at capacity
+  if (cache.size >= MAX_CACHE_SIZE) {
+    const toDelete = Math.floor(MAX_CACHE_SIZE * 0.2);
+    const iter = cache.keys();
+    for (let i = 0; i < toDelete; i++) {
+      const k = iter.next().value;
+      if (k) cache.delete(k);
+    }
+  }
   cache.set(key, { data, expires: Date.now() + ttlMs });
 }
 
@@ -230,7 +240,8 @@ async function fetchFinnhub(ticker: string): Promise<QuoteData> {
   if (!checkRate("finnhub")) throw new Error("rate limited");
 
   const quote = (await apiFetch(
-    `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker)}&token=${FINNHUB_KEY}`,
+    `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker)}`,
+    { "X-Finnhub-Token": FINNHUB_KEY },
   )) as any;
   recordCall("finnhub");
 
@@ -241,7 +252,8 @@ async function fetchFinnhub(ticker: string): Promise<QuoteData> {
   try {
     if (checkRate("finnhub")) {
       const profile = (await apiFetch(
-        `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(ticker)}&token=${FINNHUB_KEY}`,
+        `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(ticker)}`,
+        { "X-Finnhub-Token": FINNHUB_KEY },
       )) as any;
       recordCall("finnhub");
       if (profile?.name) name = profile.name;
@@ -309,7 +321,8 @@ async function fetchFinnhubFundamentals(
   if (!checkRate("finnhub")) throw new Error("rate limited");
 
   const metrics = (await apiFetch(
-    `https://finnhub.io/api/v1/stock/metric?symbol=${encodeURIComponent(ticker)}&metric=all&token=${FINNHUB_KEY}`,
+    `https://finnhub.io/api/v1/stock/metric?symbol=${encodeURIComponent(ticker)}&metric=all`,
+    { "X-Finnhub-Token": FINNHUB_KEY },
   )) as any;
   recordCall("finnhub");
 
@@ -397,7 +410,7 @@ function fmtPct(p: number | null): string {
 
 // ── Tool: investment-fetch-quote ───────────────────────────
 
-const TICKER_RE = /^[A-Z0-9][A-Z0-9.^-]{0,9}$/;
+const TICKER_RE = /^[A-Z][A-Z0-9.-]{0,9}$/;
 
 const FetchQuoteInput = {
   tickers: z
@@ -649,7 +662,30 @@ async function fetchEconomic(params: {
 
 // ── Tool: investment-fetch-filings ─────────────────────────
 
-const cikCache = new Map<string, string>();
+const CACHE_CIK = 24 * 3600_000; // 24 hours
+let tickerMapCache: { data: Record<string, string>; expires: number } | null = null;
+
+async function getTickerMap(ua: Record<string, string>): Promise<Record<string, string>> {
+  if (tickerMapCache && Date.now() < tickerMapCache.expires) {
+    return tickerMapCache.data;
+  }
+
+  if (!checkRate("secEdgar")) throw new Error("rate limited");
+
+  const raw = (await apiFetch(
+    "https://www.sec.gov/files/company_tickers.json",
+    ua,
+  )) as Record<string, { cik_str: number; ticker: string; title: string }>;
+  recordCall("secEdgar");
+
+  const map: Record<string, string> = {};
+  for (const entry of Object.values(raw)) {
+    map[entry.ticker] = String(entry.cik_str).padStart(10, "0");
+  }
+
+  tickerMapCache = { data: map, expires: Date.now() + CACHE_CIK };
+  return map;
+}
 
 const FetchFilingsInput = {
   ticker: z
@@ -686,29 +722,13 @@ async function fetchFilings(params: {
 
   const UA = { "User-Agent": "PAI InvestmentAgent research@pai.local" };
 
-  // Step 1: ticker → CIK
-  let cik = cikCache.get(ticker);
-  if (!cik) {
-    if (!checkRate("secEdgar"))
-      return "SEC EDGAR rate limited — try again shortly.";
-
-    try {
-      const all = (await apiFetch(
-        "https://www.sec.gov/files/company_tickers.json",
-        UA,
-      )) as Record<string, { cik_str: number; ticker: string; title: string }>;
-      recordCall("secEdgar");
-
-      for (const entry of Object.values(all)) {
-        if (entry.ticker === ticker) {
-          cik = String(entry.cik_str).padStart(10, "0");
-          cikCache.set(ticker, cik);
-          break;
-        }
-      }
-    } catch {
-      return `Failed to look up CIK for ${ticker}.`;
-    }
+  // Step 1: ticker → CIK (cached map, refreshed every 24h)
+  let cik: string | undefined;
+  try {
+    const map = await getTickerMap(UA);
+    cik = map[ticker];
+  } catch {
+    return `Failed to look up CIK for ${ticker}.`;
   }
 
   if (!cik) return `Ticker "${ticker}" not found in SEC EDGAR.`;
@@ -844,6 +864,9 @@ function createServer(): McpServer {
 
 // ── HTTP Server (stateless mode) ───────────────────────────
 
+// Single server instance — reused across all requests (P0 fix: no OOM from per-request allocation)
+const mcpServer = createServer();
+
 const httpServer = Bun.serve({
   port: PORT,
   hostname: "0.0.0.0",
@@ -852,17 +875,7 @@ const httpServer = Bun.serve({
 
     if (url.pathname === "/health") {
       return new Response(
-        JSON.stringify({
-          status: "ok",
-          service: "mcp-investment",
-          port: PORT,
-          keys: {
-            finnhub: !!FINNHUB_KEY,
-            fmp: !!FMP_KEY,
-            alphaVantage: !!ALPHA_VANTAGE_KEY,
-            fred: !!FRED_KEY,
-          },
-        }),
+        JSON.stringify({ status: "ok", service: "mcp-investment" }),
         { headers: { "Content-Type": "application/json" } },
       );
     }
@@ -871,8 +884,7 @@ const httpServer = Bun.serve({
       const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       });
-      const server = createServer();
-      await server.connect(transport);
+      await mcpServer.connect(transport);
       return transport.handleRequest(req);
     }
 
@@ -880,13 +892,9 @@ const httpServer = Bun.serve({
   },
 });
 
+const keyCount = [FINNHUB_KEY, FMP_KEY, ALPHA_VANTAGE_KEY, FRED_KEY].filter(Boolean).length;
 console.log(`mcp-investment listening on http://0.0.0.0:${PORT}/mcp`);
-console.log(
-  `Tools: investment-fetch-quote, investment-fetch-economic, investment-fetch-filings, investment-api-usage`,
-);
-console.log(
-  `Keys: finnhub=${!!FINNHUB_KEY} fmp=${!!FMP_KEY} alphaVantage=${!!ALPHA_VANTAGE_KEY} fred=${!!FRED_KEY}`,
-);
+console.log(`Tools: 4 | Keys: ${keyCount}/4 configured`);
 
 process.on("SIGTERM", () => {
   httpServer.stop();
