@@ -2,14 +2,14 @@
 # Multi-stage build: install deps → production image
 
 # ── Build stage ──────────────────────────────────────
-FROM oven/bun:1.1.45-alpine AS build
+FROM oven/bun:1.3.10-alpine AS build
 
 WORKDIR /app
 COPY package.json bun.lock* ./
 RUN bun install --production
 
 # ── Production stage ─────────────────────────────────
-FROM oven/bun:1.1.45-alpine
+FROM oven/bun:1.3.10-alpine
 
 WORKDIR /app
 
