@@ -1,0 +1,52 @@
+# docker-compose.yml for mcp-investment
+# Deploy: Portainer → Stacks → Add from Repository → GitOps polling
+# CI/CD: GitHub Actions builds image on push, updates this tag automatically
+#
+# SECURITY: Hardened container — no docker.sock, no privileged, no host network.
+# API keys read from /secrets/ files, NEVER from environment variables.
+
+services:
+  mcp-investment:
+    image: ghcr.io/nsoult-agentic/mcp-investment:latest
+    container_name: mcp-investment
+    restart: unless-stopped
+
+    # ── Network ──
+    ports:
+      - "127.0.0.1:8901:8901"  # Loopback ONLY — no external access
+
+    # ── Security Hardening ──
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # ── Resource Limits ──
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
+
+    # ── Filesystem ──
+    volumes:
+      # Secrets — root-owned on host, read-only in container
+      - /srv/mcp-investment/secrets:/secrets:ro
+    tmpfs:
+      - /tmp:size=64m
+
+    # ── Health Check ──
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:8901/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # ── Environment ──
+    environment:
+      - NODE_ENV=production
+      - SECRETS_DIR=/secrets
+      - PORT=8901
+      # NEVER put API keys here — read from /secrets/ files
