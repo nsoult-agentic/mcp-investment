@@ -13,7 +13,7 @@
  *
  * Usage: PORT=8901 SECRETS_DIR=/secrets bun run src/http.ts
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -26,13 +26,67 @@ const SECRETS_DIR = process.env["SECRETS_DIR"] || "/secrets";
 
 // ── Secret Loading ─────────────────────────────────────────
 
+interface SecretDiag {
+  name: string;
+  loaded: boolean;
+  chars: number;
+  error: string | null;
+}
+
+const secretDiags: SecretDiag[] = [];
+
 function loadSecret(name: string): string | null {
+  const path = resolve(SECRETS_DIR, name);
+  const diag: SecretDiag = { name, loaded: false, chars: 0, error: null };
+
   try {
-    const val = readFileSync(resolve(SECRETS_DIR, name), "utf-8").trim();
-    return val.length > 0 ? val : null;
-  } catch {
+    if (!existsSync(path)) {
+      diag.error = "file not found";
+      console.warn(`[secrets] ${name}: file not found at ${path}`);
+      secretDiags.push(diag);
+      return null;
+    }
+    const stat = statSync(path);
+    if (!stat.isFile()) {
+      diag.error = "not a file (directory?)";
+      console.warn(`[secrets] ${name}: exists but is not a file`);
+      secretDiags.push(diag);
+      return null;
+    }
+    if (stat.size === 0) {
+      diag.error = "file is empty (0 bytes)";
+      console.warn(`[secrets] ${name}: file is empty (0 bytes)`);
+      secretDiags.push(diag);
+      return null;
+    }
+    const val = readFileSync(path, "utf-8").trim();
+    if (val.length === 0) {
+      diag.error = "content trims to empty (whitespace only)";
+      console.warn(`[secrets] ${name}: content trims to empty`);
+      secretDiags.push(diag);
+      return null;
+    }
+    diag.loaded = true;
+    diag.chars = val.length;
+    console.log(`[secrets] ${name}: loaded (${val.length} chars)`);
+    secretDiags.push(diag);
+    return val;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    diag.error = msg;
+    console.warn(`[secrets] ${name}: load failed — ${msg}`);
+    secretDiags.push(diag);
     return null;
   }
+}
+
+// Log secrets directory contents at startup (file names only, never values)
+try {
+  const files = readdirSync(SECRETS_DIR);
+  console.log(`[secrets] SECRETS_DIR=${SECRETS_DIR} contains: ${files.length > 0 ? files.join(", ") : "(empty directory)"}`);
+} catch (err: unknown) {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.warn(`[secrets] Cannot read SECRETS_DIR=${SECRETS_DIR}: ${msg}`);
 }
 
 const FINNHUB_KEY = loadSecret("finnhub-key");
@@ -167,6 +221,23 @@ async function apiFetch(
   return res.json();
 }
 
+/**
+ * Safe wrapper for API calls that embed keys in URLs (FMP, Alpha Vantage, FRED).
+ * Catches ALL errors and re-throws with a generic message, preventing runtime
+ * errors from leaking the full URL (which contains the API key) into tool output
+ * or logs that reach external systems.
+ */
+async function safeFetch(
+  url: string,
+  headers: Record<string, string> = {},
+): Promise<unknown> {
+  try {
+    return await apiFetch(url, headers);
+  } catch {
+    throw new Error("API request failed");
+  }
+}
+
 // ── Data Types ─────────────────────────────────────────────
 
 interface QuoteData {
@@ -287,7 +358,7 @@ async function fetchFMP(ticker: string): Promise<QuoteData> {
   if (!FMP_KEY) throw new Error("no key");
   if (!checkRate("fmp")) throw new Error("rate limited");
 
-  const data = (await apiFetch(
+  const data = (await safeFetch(
     `https://financialmodelingprep.com/api/v3/quote/${encodeURIComponent(ticker)}?apikey=${FMP_KEY}`,
   )) as any;
   recordCall("fmp");
@@ -352,7 +423,7 @@ async function fetchAlphaVantageFundamentals(
   if (!ALPHA_VANTAGE_KEY) throw new Error("no key");
   if (!checkRate("alphaVantage")) throw new Error("rate limited");
 
-  const data = (await apiFetch(
+  const data = (await safeFetch(
     `https://www.alphavantage.co/query?function=OVERVIEW&symbol=${encodeURIComponent(ticker)}&apikey=${ALPHA_VANTAGE_KEY}`,
   )) as any;
   recordCall("alphaVantage");
@@ -616,7 +687,7 @@ async function fetchEconomic(params: {
       }
 
       try {
-        const obsData = (await apiFetch(
+        const obsData = (await safeFetch(
           `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${FRED_KEY}&file_type=json&sort_order=desc&limit=${params.observations}`,
         )) as any;
         recordCall("fred");
@@ -624,7 +695,7 @@ async function fetchEconomic(params: {
         let title = COMMON_SERIES[seriesId] || seriesId;
         try {
           if (checkRate("fred")) {
-            const info = (await apiFetch(
+            const info = (await safeFetch(
               `https://api.stlouisfed.org/fred/series?series_id=${seriesId}&api_key=${FRED_KEY}&file_type=json`,
             )) as any;
             recordCall("fred");
@@ -758,12 +829,13 @@ async function fetchFilings(params: {
       const form = recent.form[i];
       if (params.form_type !== "ALL" && form !== params.form_type) continue;
 
-      const accNum = recent.accessionNumber[i]?.replace(/-/g, "");
+      const accNum = (recent.accessionNumber[i] || "").replace(/-/g, "").replace(/[^a-zA-Z0-9]/g, "");
       const accDash = recent.accessionNumber[i];
-      const doc = recent.primaryDocument[i];
+      const doc = (recent.primaryDocument[i] || "").replace(/[^a-zA-Z0-9._-]/g, "");
       const filed = recent.filingDate[i];
       const report = recent.reportDate?.[i] || "N/A";
-      const url = `https://www.sec.gov/Archives/edgar/data/${data.cik}/${accNum}/${doc}`;
+      const cik = String(data.cik || "").replace(/[^0-9]/g, "");
+      const url = `https://www.sec.gov/Archives/edgar/data/${cik}/${accNum}/${doc}`;
 
       lines.push(`### ${form} — Filed ${filed}`);
       lines.push(`  Report Date: ${report}`);
@@ -794,12 +866,12 @@ async function apiUsage(): Promise<string> {
   ];
 
   const keyStatus: Record<string, string> = {
-    yahoo: "N/A (no key)",
-    finnhub: FINNHUB_KEY ? "configured" : "MISSING",
-    fmp: FMP_KEY ? "configured" : "MISSING",
-    alphaVantage: ALPHA_VANTAGE_KEY ? "configured" : "MISSING",
-    fred: FRED_KEY ? "configured" : "MISSING",
-    secEdgar: "N/A (no key)",
+    yahoo: "N/A (no key needed)",
+    finnhub: FINNHUB_KEY ? "configured" : "NOT CONFIGURED",
+    fmp: FMP_KEY ? "configured" : "NOT CONFIGURED",
+    alphaVantage: ALPHA_VANTAGE_KEY ? "configured" : "NOT CONFIGURED",
+    fred: FRED_KEY ? "configured" : "NOT CONFIGURED",
+    secEdgar: "N/A (no key needed)",
   };
 
   for (const api of Object.keys(API_LIMITS)) {
@@ -873,8 +945,12 @@ const httpServer = Bun.serve({
     const url = new URL(req.url);
 
     if (url.pathname === "/health") {
+      const keys: Record<string, boolean> = {};
+      for (const d of secretDiags) {
+        keys[d.name] = d.loaded;
+      }
       return new Response(
-        JSON.stringify({ status: "ok", service: "mcp-investment" }),
+        JSON.stringify({ status: "ok", service: "mcp-investment", keys }),
         { headers: { "Content-Type": "application/json" } },
       );
     }
