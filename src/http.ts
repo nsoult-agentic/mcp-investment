@@ -24,6 +24,22 @@ import { z } from "zod";
 const PORT = Number(process.env["PORT"]) || 8901;
 const SECRETS_DIR = process.env["SECRETS_DIR"] || "/secrets";
 
+// ── Rate Limiter ──────────────────────────────────────────
+
+const RATE_LIMIT = 30;
+const RATE_WINDOW_MS = 60_000;
+const requestTimestamps: number[] = [];
+
+function isRateLimited(): boolean {
+  const now = Date.now();
+  while (requestTimestamps.length > 0 && requestTimestamps[0] < now - RATE_WINDOW_MS) {
+    requestTimestamps.shift();
+  }
+  if (requestTimestamps.length >= RATE_LIMIT) return true;
+  requestTimestamps.push(now);
+  return false;
+}
+
 // ── Secret Loading ─────────────────────────────────────────
 
 interface SecretDiag {
@@ -497,10 +513,13 @@ const FetchQuoteInput = {
     .describe("'quick' = price only, 'full' = price + fundamentals"),
 };
 
+const REQUEST_TIMEOUT_MS = 60_000; // 60s global timeout per tool call
+
 async function fetchQuote(params: {
   tickers: string;
   mode: string;
 }): Promise<string> {
+  const deadline = Date.now() + REQUEST_TIMEOUT_MS;
   const tickers = params.tickers
     .split(",")
     .map((t) => t.trim().toUpperCase())
@@ -517,6 +536,10 @@ async function fetchQuote(params: {
   const results: string[] = [];
 
   for (const ticker of tickers) {
+    if (Date.now() > deadline) {
+      results.push(`## ${ticker}\nSkipped — request timeout reached (${REQUEST_TIMEOUT_MS / 1000}s).`);
+      continue;
+    }
     const cacheKey = `quote:${ticker}`;
     let quote = getCached<QuoteData>(cacheKey);
 
@@ -956,6 +979,9 @@ const httpServer = Bun.serve({
     }
 
     if (url.pathname === "/mcp") {
+      if (isRateLimited()) {
+        return new Response("Rate limit exceeded", { status: 429 });
+      }
       const server = createServer();
       const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
