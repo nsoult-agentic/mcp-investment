@@ -9,7 +9,7 @@
 
 services:
   mcp-investment:
-    image: ghcr.io/nsoult-agentic/mcp-investment:sha-3e5ac96
+    image: ghcr.io/nsoult-agentic/mcp-investment:sha-7e99f2b
     container_name: mcp-investment
     restart: unless-stopped
 
