@@ -829,7 +829,7 @@ async function fetchFilings(params: {
   const cached = getCached<string>(cacheKey);
   if (cached) return cached;
 
-  const UA = { "User-Agent": "PAI/1.0 (pai-investment-tool; nsoult-agentic)" };
+  const UA = { "User-Agent": "PAI pai@stabpablo.eu" };
 
   // Step 1: ticker → CIK (cached map, refreshed every 24h)
   let cik: string | undefined;
