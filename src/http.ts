@@ -248,8 +248,23 @@ async function safeFetch(
   headers: Record<string, string> = {},
 ): Promise<unknown> {
   try {
-    return await apiFetch(url, headers);
-  } catch {
+    const res = await fetch(url, {
+      headers: { Accept: "application/json", ...headers },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      // Log status + domain for debugging, NEVER the full URL (contains API keys)
+      const domain = new URL(url).hostname;
+      console.error(`[safeFetch] ${domain} HTTP ${res.status}`);
+      throw new Error(`HTTP ${res.status}`);
+    }
+    return res.json();
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.startsWith("HTTP ")) {
+      // Network/DNS/timeout error — safe to log fully
+      console.error(`[safeFetch] network error: ${msg}`);
+    }
     throw new Error("API request failed");
   }
 }
@@ -821,7 +836,9 @@ async function fetchFilings(params: {
   try {
     const map = await getTickerMap(UA);
     cik = map[ticker];
-  } catch {
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[edgar] CIK lookup failed: ${msg}`);
     return `Failed to look up CIK for ${ticker}.`;
   }
 
