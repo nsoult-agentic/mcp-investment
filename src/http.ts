@@ -105,10 +105,10 @@ try {
   console.warn(`[secrets] Cannot read SECRETS_DIR=${SECRETS_DIR}: ${msg}`);
 }
 
-const FINNHUB_KEY = loadSecret("finnhub-key");
-const FMP_KEY = loadSecret("fmp-key");
-const ALPHA_VANTAGE_KEY = loadSecret("alpha-vantage-key");
-const FRED_KEY = loadSecret("fred-key");
+const FINNHUB_KEY = loadSecret("finnhub");
+const FMP_KEY = loadSecret("fmp");
+const ALPHA_VANTAGE_KEY = loadSecret("alpha-vantage");
+const FRED_KEY = loadSecret("fred");
 
 // ── In-Memory Cache ────────────────────────────────────────
 
@@ -814,7 +814,7 @@ async function fetchFilings(params: {
   const cached = getCached<string>(cacheKey);
   if (cached) return cached;
 
-  const UA = { "User-Agent": "research-agent/1.0 (financial-data-tool)" };
+  const UA = { "User-Agent": "PAI/1.0 (pai-investment-tool; nsoult-agentic)" };
 
   // Step 1: ticker → CIK (cached map, refreshed every 24h)
   let cik: string | undefined;
