@@ -300,6 +300,8 @@ interface FundamentalsData {
   roa: number | null;
   beta: number | null;
   analystTarget: number | null;
+  sector: string | null;
+  industry: string | null;
   source: string;
 }
 
@@ -442,6 +444,20 @@ async function fetchFinnhubFundamentals(
   const m = metrics?.metric;
   if (!m) throw new Error("no data");
 
+  // Also fetch profile for sector/industry data
+  let sector: string | null = null;
+  let industry: string | null = null;
+  try {
+    if (checkRate("finnhub")) {
+      const profile = (await apiFetch(
+        `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(ticker)}`,
+        { "X-Finnhub-Token": FINNHUB_KEY },
+      )) as any;
+      recordCall("finnhub");
+      if (profile?.finnhubIndustry) industry = profile.finnhubIndustry;
+    }
+  } catch { /* profile is optional */ }
+
   return {
     pe: m.peNormalizedAnnual || m.peTTM || null,
     eps: m.epsNormalizedAnnual || m.epsTTM || null,
@@ -453,6 +469,8 @@ async function fetchFinnhubFundamentals(
     roa: m.roaTTM || null,
     beta: m.beta || null,
     analystTarget: m.targetMedianPrice || null,
+    sector,
+    industry,
     source: "finnhub",
   };
 }
@@ -497,6 +515,8 @@ async function fetchAlphaVantageFundamentals(
         : null,
     beta: num(data.Beta),
     analystTarget: num(data.AnalystTargetPrice),
+    sector: data.Sector && data.Sector !== "None" ? data.Sector : null,
+    industry: data.Industry && data.Industry !== "None" ? data.Industry : null,
     source: "alpha-vantage",
   };
 }
@@ -649,6 +669,10 @@ async function fetchQuote(params: {
           lines.push(`Dividend Yield: ${fmtPct(fund.dividendYield)}`);
         if (fund.analystTarget !== null)
           lines.push(`Analyst Target: $${fund.analystTarget.toFixed(2)}`);
+        if (fund.sector || fund.industry) {
+          const parts = [fund.sector, fund.industry].filter(Boolean);
+          lines.push(`Sector: ${parts.join(" / ")}`);
+        }
         lines.push(`Source: ${fund.source}`);
       } else {
         lines.push(
