@@ -284,6 +284,8 @@ interface QuoteData {
   yearLow: number;
   marketCap: number | null;
   pe: number | null;
+  sector: string | null;
+  industry: string | null;
   source: string;
 }
 
@@ -331,6 +333,8 @@ async function fetchYahoo(ticker: string): Promise<QuoteData> {
     yearLow: meta.fiftyTwoWeekLow || 0,
     marketCap: null,
     pe: null,
+    sector: null,
+    industry: null,
     source: "yahoo",
   };
 }
@@ -351,6 +355,8 @@ async function fetchFinnhub(ticker: string): Promise<QuoteData> {
 
   let name = ticker;
   let marketCap: number | null = null;
+  let sector: string | null = null;
+  let industry: string | null = null;
   try {
     if (checkRate("finnhub")) {
       const profile = (await apiFetch(
@@ -361,6 +367,7 @@ async function fetchFinnhub(ticker: string): Promise<QuoteData> {
       if (profile?.name) name = profile.name;
       if (profile?.marketCapitalization)
         marketCap = profile.marketCapitalization * 1_000_000;
+      if (profile?.finnhubIndustry) industry = profile.finnhubIndustry;
     }
   } catch {
     /* profile is optional */
@@ -379,6 +386,8 @@ async function fetchFinnhub(ticker: string): Promise<QuoteData> {
     yearLow: 0,
     marketCap,
     pe: null,
+    sector,
+    industry,
     source: "finnhub",
   };
 }
@@ -410,6 +419,8 @@ async function fetchFMP(ticker: string): Promise<QuoteData> {
     yearLow: q.yearLow || 0,
     marketCap: q.marketCap || null,
     pe: q.pe || null,
+    sector: null,
+    industry: null,
     source: "fmp",
   };
 }
@@ -594,6 +605,10 @@ async function fetchQuote(params: {
       );
     if (quote.marketCap) lines.push(`Market Cap: ${fmtMoney(quote.marketCap)}`);
     if (quote.pe) lines.push(`P/E: ${quote.pe.toFixed(1)}`);
+    if (quote.sector || quote.industry) {
+      const parts = [quote.sector, quote.industry].filter(Boolean);
+      lines.push(`Sector: ${parts.join(" / ")}`);
+    }
     lines.push(`Source: ${quote.source}`);
 
     if (params.mode === "full") {
