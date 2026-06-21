@@ -235,9 +235,7 @@ describe("sanitizeAccession / sanitizeDoc / buildFilingUrl", () => {
   });
 
   test("buildFilingUrl assembles a sanitized SEC Archives URL", () => {
-    expect(
-      buildFilingUrl("0000320193", "0000320193-23-000106", "aapl-20230930.htm"),
-    ).toBe(
+    expect(buildFilingUrl("0000320193", "0000320193-23-000106", "aapl-20230930.htm")).toBe(
       "https://www.sec.gov/Archives/edgar/data/0000320193/000032019323000106/aapl-20230930.htm",
     );
   });

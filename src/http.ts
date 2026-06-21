@@ -109,7 +109,9 @@ function loadSecret(name: string): string | null {
 // Log secrets directory contents at startup (file names only, never values)
 try {
   const files = readdirSync(SECRETS_DIR);
-  console.log(`[secrets] SECRETS_DIR=${SECRETS_DIR} contains: ${files.length > 0 ? files.join(", ") : "(empty directory)"}`);
+  console.log(
+    `[secrets] SECRETS_DIR=${SECRETS_DIR} contains: ${files.length > 0 ? files.join(", ") : "(empty directory)"}`,
+  );
 } catch (err: unknown) {
   const msg = err instanceof Error ? err.message : String(err);
   console.warn(`[secrets] Cannot read SECRETS_DIR=${SECRETS_DIR}: ${msg}`);
@@ -155,10 +157,7 @@ function getUsage(api: string): string {
 
 // ── Fetch Helper ───────────────────────────────────────────
 
-async function apiFetch(
-  url: string,
-  headers: Record<string, string> = {},
-): Promise<unknown> {
+async function apiFetch(url: string, headers: Record<string, string> = {}): Promise<unknown> {
   const res = await fetch(url, {
     headers: { Accept: "application/json", ...headers },
     signal: AbortSignal.timeout(10_000),
@@ -173,10 +172,7 @@ async function apiFetch(
  * errors from leaking the full URL (which contains the API key) into tool output
  * or logs that reach external systems.
  */
-async function safeFetch(
-  url: string,
-  headers: Record<string, string> = {},
-): Promise<unknown> {
+async function safeFetch(url: string, headers: Record<string, string> = {}): Promise<unknown> {
   try {
     const res = await fetch(url, {
       headers: { Accept: "application/json", ...headers },
@@ -255,9 +251,7 @@ async function fetchYahoo(ticker: string): Promise<QuoteData> {
     name: meta.shortName || meta.longName || ticker,
     price: meta.regularMarketPrice,
     change: prev ? meta.regularMarketPrice - prev : 0,
-    changePercent: prev
-      ? ((meta.regularMarketPrice - prev) / prev) * 100
-      : 0,
+    changePercent: prev ? ((meta.regularMarketPrice - prev) / prev) * 100 : 0,
     volume: meta.regularMarketVolume || 0,
     dayHigh: meta.regularMarketDayHigh || 0,
     dayLow: meta.regularMarketDayLow || 0,
@@ -287,7 +281,7 @@ async function fetchFinnhub(ticker: string): Promise<QuoteData> {
 
   let name = ticker;
   let marketCap: number | null = null;
-  let sector: string | null = null;
+  const sector: string | null = null;
   let industry: string | null = null;
   try {
     if (checkRate("finnhub")) {
@@ -297,8 +291,7 @@ async function fetchFinnhub(ticker: string): Promise<QuoteData> {
       )) as any;
       recordCall("finnhub");
       if (profile?.name) name = profile.name;
-      if (profile?.marketCapitalization)
-        marketCap = profile.marketCapitalization * 1_000_000;
+      if (profile?.marketCapitalization) marketCap = profile.marketCapitalization * 1_000_000;
       if (profile?.finnhubIndustry) industry = profile.finnhubIndustry;
     }
   } catch {
@@ -359,9 +352,7 @@ async function fetchFMP(ticker: string): Promise<QuoteData> {
 
 // ── API: Finnhub Fundamentals ──────────────────────────────
 
-async function fetchFinnhubFundamentals(
-  ticker: string,
-): Promise<FundamentalsData> {
+async function fetchFinnhubFundamentals(ticker: string): Promise<FundamentalsData> {
   if (!FINNHUB_KEY) throw new Error("no key");
   if (!checkRate("finnhub")) throw new Error("rate limited");
 
@@ -375,7 +366,7 @@ async function fetchFinnhubFundamentals(
   if (!m) throw new Error("no data");
 
   // Also fetch profile for sector/industry data
-  let sector: string | null = null;
+  const sector: string | null = null;
   let industry: string | null = null;
   try {
     if (checkRate("finnhub")) {
@@ -386,7 +377,9 @@ async function fetchFinnhubFundamentals(
       recordCall("finnhub");
       if (profile?.finnhubIndustry) industry = profile.finnhubIndustry;
     }
-  } catch { /* profile is optional */ }
+  } catch {
+    /* profile is optional */
+  }
 
   return {
     pe: m.peNormalizedAnnual || m.peTTM || null,
@@ -407,9 +400,7 @@ async function fetchFinnhubFundamentals(
 
 // ── API: Alpha Vantage Fundamentals ────────────────────────
 
-async function fetchAlphaVantageFundamentals(
-  ticker: string,
-): Promise<FundamentalsData> {
+async function fetchAlphaVantageFundamentals(ticker: string): Promise<FundamentalsData> {
   if (!ALPHA_VANTAGE_KEY) throw new Error("no key");
   if (!checkRate("alphaVantage")) throw new Error("rate limited");
 
@@ -420,29 +411,18 @@ async function fetchAlphaVantageFundamentals(
 
   if (!data?.Symbol) throw new Error("no data");
 
-  const num = (v: string | undefined) =>
-    v && v !== "None" && v !== "-" ? Number(v) : null;
+  const num = (v: string | undefined) => (v && v !== "None" && v !== "-" ? Number(v) : null);
 
   return {
     pe: num(data.PERatio),
     eps: num(data.EPS),
     bookValue: num(data.BookValue),
-    dividendYield:
-      num(data.DividendYield) !== null ? num(data.DividendYield)! * 100 : null,
-    profitMargin:
-      num(data.ProfitMargin) !== null ? num(data.ProfitMargin)! * 100 : null,
+    dividendYield: num(data.DividendYield) !== null ? num(data.DividendYield)! * 100 : null,
+    profitMargin: num(data.ProfitMargin) !== null ? num(data.ProfitMargin)! * 100 : null,
     operatingMargin:
-      num(data.OperatingMarginTTM) !== null
-        ? num(data.OperatingMarginTTM)! * 100
-        : null,
-    roe:
-      num(data.ReturnOnEquityTTM) !== null
-        ? num(data.ReturnOnEquityTTM)! * 100
-        : null,
-    roa:
-      num(data.ReturnOnAssetsTTM) !== null
-        ? num(data.ReturnOnAssetsTTM)! * 100
-        : null,
+      num(data.OperatingMarginTTM) !== null ? num(data.OperatingMarginTTM)! * 100 : null,
+    roe: num(data.ReturnOnEquityTTM) !== null ? num(data.ReturnOnEquityTTM)! * 100 : null,
+    roa: num(data.ReturnOnAssetsTTM) !== null ? num(data.ReturnOnAssetsTTM)! * 100 : null,
     beta: num(data.Beta),
     analystTarget: num(data.AnalystTargetPrice),
     sector: data.Sector && data.Sector !== "None" ? data.Sector : null,
@@ -458,9 +438,7 @@ const FetchQuoteInput = {
     .string()
     .min(1)
     .max(100)
-    .describe(
-      "Comma-separated ticker symbols (e.g., 'NVDA' or 'NVDA,AAPL,MSFT'). Max 10.",
-    ),
+    .describe("Comma-separated ticker symbols (e.g., 'NVDA' or 'NVDA,AAPL,MSFT'). Max 10."),
   mode: z
     .enum(["quick", "full"])
     .default("quick")
@@ -469,10 +447,7 @@ const FetchQuoteInput = {
 
 const REQUEST_TIMEOUT_MS = 60_000; // 60s global timeout per tool call
 
-async function fetchQuote(params: {
-  tickers: string;
-  mode: string;
-}): Promise<string> {
+async function fetchQuote(params: { tickers: string; mode: string }): Promise<string> {
   const deadline = Date.now() + REQUEST_TIMEOUT_MS;
   const parsed = parseTickers(params.tickers);
   if (!parsed.ok) return parsed.error;
@@ -482,7 +457,9 @@ async function fetchQuote(params: {
 
   for (const ticker of tickers) {
     if (Date.now() > deadline) {
-      results.push(`## ${ticker}\nSkipped — request timeout reached (${REQUEST_TIMEOUT_MS / 1000}s).`);
+      results.push(
+        `## ${ticker}\nSkipped — request timeout reached (${REQUEST_TIMEOUT_MS / 1000}s).`,
+      );
       continue;
     }
     const cacheKey = `quote:${ticker}`;
@@ -501,9 +478,7 @@ async function fetchQuote(params: {
     }
 
     if (!quote) {
-      results.push(
-        `## ${ticker}\nUnable to fetch quote — all sources failed or rate limited.`,
-      );
+      results.push(`## ${ticker}\nUnable to fetch quote — all sources failed or rate limited.`);
       continue;
     }
 
@@ -515,13 +490,9 @@ async function fetchQuote(params: {
 
     if (quote.volume > 0) lines.push(`Volume: ${fmtVol(quote.volume)}`);
     if (quote.dayHigh > 0)
-      lines.push(
-        `Day Range: $${quote.dayLow.toFixed(2)} — $${quote.dayHigh.toFixed(2)}`,
-      );
+      lines.push(`Day Range: $${quote.dayLow.toFixed(2)} — $${quote.dayHigh.toFixed(2)}`);
     if (quote.yearHigh > 0)
-      lines.push(
-        `52-Week: $${quote.yearLow.toFixed(2)} — $${quote.yearHigh.toFixed(2)}`,
-      );
+      lines.push(`52-Week: $${quote.yearLow.toFixed(2)} — $${quote.yearHigh.toFixed(2)}`);
     if (quote.marketCap) lines.push(`Market Cap: ${fmtMoney(quote.marketCap)}`);
     if (quote.pe) lines.push(`P/E: ${quote.pe.toFixed(1)}`);
     if (quote.sector || quote.industry) {
@@ -535,10 +506,7 @@ async function fetchQuote(params: {
       let fund = getCached<FundamentalsData>(fundKey);
 
       if (!fund) {
-        for (const fetcher of [
-          fetchFinnhubFundamentals,
-          fetchAlphaVantageFundamentals,
-        ]) {
+        for (const fetcher of [fetchFinnhubFundamentals, fetchAlphaVantageFundamentals]) {
           try {
             fund = await fetcher(ticker);
             setCache(fundKey, fund, CACHE_FUNDAMENTALS);
@@ -553,16 +521,12 @@ async function fetchQuote(params: {
         lines.push("", "### Fundamentals");
         if (fund.pe !== null) lines.push(`P/E Ratio: ${fund.pe.toFixed(1)}`);
         if (fund.eps !== null) lines.push(`EPS: $${fund.eps.toFixed(2)}`);
-        if (fund.bookValue !== null)
-          lines.push(`Book Value: $${fund.bookValue.toFixed(2)}`);
-        if (fund.profitMargin !== null)
-          lines.push(`Profit Margin: ${fmtPct(fund.profitMargin)}`);
+        if (fund.bookValue !== null) lines.push(`Book Value: $${fund.bookValue.toFixed(2)}`);
+        if (fund.profitMargin !== null) lines.push(`Profit Margin: ${fmtPct(fund.profitMargin)}`);
         if (fund.operatingMargin !== null)
           lines.push(`Operating Margin: ${fmtPct(fund.operatingMargin)}`);
-        if (fund.roe !== null)
-          lines.push(`Return on Equity: ${fmtPct(fund.roe)}`);
-        if (fund.roa !== null)
-          lines.push(`Return on Assets: ${fmtPct(fund.roa)}`);
+        if (fund.roe !== null) lines.push(`Return on Equity: ${fmtPct(fund.roe)}`);
+        if (fund.roa !== null) lines.push(`Return on Assets: ${fmtPct(fund.roa)}`);
         if (fund.beta !== null) lines.push(`Beta: ${fund.beta.toFixed(2)}`);
         if (fund.dividendYield !== null)
           lines.push(`Dividend Yield: ${fmtPct(fund.dividendYield)}`);
@@ -574,11 +538,7 @@ async function fetchQuote(params: {
         }
         lines.push(`Source: ${fund.source}`);
       } else {
-        lines.push(
-          "",
-          "### Fundamentals",
-          "Unavailable — sources failed or rate limited.",
-        );
+        lines.push("", "### Fundamentals", "Unavailable — sources failed or rate limited.");
       }
     }
 
@@ -626,10 +586,7 @@ const FetchEconomicInput = {
     .describe("Data points per series (default: 6)"),
 };
 
-async function fetchEconomic(params: {
-  series: string;
-  observations: number;
-}): Promise<string> {
+async function fetchEconomic(params: { series: string; observations: number }): Promise<string> {
   if (!FRED_KEY) return "FRED API key not configured. Economic data unavailable.";
 
   const parsed = parseSeries(params.series);
@@ -708,10 +665,10 @@ async function getTickerMap(ua: Record<string, string>): Promise<Record<string, 
 
   if (!checkRate("secEdgar")) throw new Error("rate limited");
 
-  const raw = (await apiFetch(
-    "https://www.sec.gov/files/company_tickers.json",
-    ua,
-  )) as Record<string, { cik_str: number; ticker: string; title: string }>;
+  const raw = (await apiFetch("https://www.sec.gov/files/company_tickers.json", ua)) as Record<
+    string,
+    { cik_str: number; ticker: string; title: string }
+  >;
   recordCall("secEdgar");
 
   const map = buildTickerMap(raw);
@@ -725,10 +682,7 @@ const FetchFilingsInput = {
     .string()
     .min(1)
     .max(10)
-    .regex(
-      /^[A-Z0-9.]{1,10}$/,
-      "Ticker: uppercase letters, digits, dots only",
-    )
+    .regex(/^[A-Z0-9.]{1,10}$/, "Ticker: uppercase letters, digits, dots only")
     .describe("Stock ticker (e.g., 'NVDA')"),
   form_type: z
     .enum(["10-K", "10-Q", "8-K", "ALL"])
@@ -769,14 +723,10 @@ async function fetchFilings(params: {
   if (!cik) return `Ticker "${ticker}" not found in SEC EDGAR.`;
 
   // Step 2: fetch filings
-  if (!checkRate("secEdgar"))
-    return "SEC EDGAR rate limited — try again shortly.";
+  if (!checkRate("secEdgar")) return "SEC EDGAR rate limited — try again shortly.";
 
   try {
-    const data = (await apiFetch(
-      `https://data.sec.gov/submissions/CIK${cik}.json`,
-      UA,
-    )) as any;
+    const data = (await apiFetch(`https://data.sec.gov/submissions/CIK${cik}.json`, UA)) as any;
     recordCall("secEdgar");
 
     const recent = data?.filings?.recent;
@@ -797,7 +747,11 @@ async function fetchFilings(params: {
       const filed = recent.filingDate[i];
       const report = recent.reportDate?.[i] || "N/A";
       const cik = String(data.cik || "").replace(/[^0-9]/g, "");
-      const url = buildFilingUrl(cik, recent.accessionNumber[i] || "", recent.primaryDocument[i] || "");
+      const url = buildFilingUrl(
+        cik,
+        recent.accessionNumber[i] || "",
+        recent.primaryDocument[i] || "",
+      );
 
       lines.push(`### ${form} — Filed ${filed}`);
       lines.push(`  Report Date: ${report}`);
@@ -820,12 +774,7 @@ async function fetchFilings(params: {
 // ── Tool: investment-api-usage ─────────────────────────────
 
 async function apiUsage(): Promise<string> {
-  const lines = [
-    "## API Usage Status",
-    "",
-    "| API | Usage | Key |",
-    "|-----|-------|-----|",
-  ];
+  const lines = ["## API Usage Status", "", "| API | Usage | Key |", "|-----|-------|-----|"];
 
   const keyStatus: Record<string, string> = {
     yahoo: "N/A (no key needed)",
@@ -911,10 +860,9 @@ const httpServer = Bun.serve({
       for (const d of secretDiags) {
         keys[d.name] = d.loaded;
       }
-      return new Response(
-        JSON.stringify({ status: "ok", service: "mcp-investment", keys }),
-        { headers: { "Content-Type": "application/json" } },
-      );
+      return new Response(JSON.stringify({ status: "ok", service: "mcp-investment", keys }), {
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     if (url.pathname === "/mcp") {
