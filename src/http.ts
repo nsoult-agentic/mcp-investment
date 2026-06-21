@@ -18,6 +18,24 @@ import { resolve } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
+import {
+  fmtMoney,
+  fmtVol,
+  fmtPct,
+  parseTickers,
+  parseSeries,
+  buildTickerMap,
+  buildFilingUrl,
+  API_LIMITS,
+  newRateState,
+  checkRate as checkRatePure,
+  recordCall as recordCallPure,
+  getUsage as getUsagePure,
+  isRateLimited as isRateLimitedPure,
+  getCached as getCachedPure,
+  setCache as setCachePure,
+  type CacheEntry,
+} from "./domain.js";
 
 // ── Configuration ──────────────────────────────────────────
 
@@ -26,18 +44,10 @@ const SECRETS_DIR = process.env["SECRETS_DIR"] || "/secrets";
 
 // ── Rate Limiter ──────────────────────────────────────────
 
-const RATE_LIMIT = 30;
-const RATE_WINDOW_MS = 60_000;
 const requestTimestamps: number[] = [];
 
 function isRateLimited(): boolean {
-  const now = Date.now();
-  while (requestTimestamps.length > 0 && requestTimestamps[0] < now - RATE_WINDOW_MS) {
-    requestTimestamps.shift();
-  }
-  if (requestTimestamps.length >= RATE_LIMIT) return true;
-  requestTimestamps.push(now);
-  return false;
+  return isRateLimitedPure(requestTimestamps, Date.now());
 }
 
 // ── Secret Loading ─────────────────────────────────────────
@@ -112,29 +122,14 @@ const FRED_KEY = loadSecret("fred");
 
 // ── In-Memory Cache ────────────────────────────────────────
 
-const MAX_CACHE_SIZE = 5_000;
-const cache = new Map<string, { data: unknown; expires: number }>();
+const cache = new Map<string, CacheEntry>();
 
 function getCached<T>(key: string): T | null {
-  const entry = cache.get(key);
-  if (!entry || Date.now() > entry.expires) {
-    cache.delete(key);
-    return null;
-  }
-  return entry.data as T;
+  return getCachedPure<T>(cache, key, Date.now());
 }
 
 function setCache(key: string, data: unknown, ttlMs: number): void {
-  // LRU eviction: drop oldest 20% when at capacity
-  if (cache.size >= MAX_CACHE_SIZE) {
-    const toDelete = Math.floor(MAX_CACHE_SIZE * 0.2);
-    const iter = cache.keys();
-    for (let i = 0; i < toDelete; i++) {
-      const k = iter.next().value;
-      if (k) cache.delete(k);
-    }
-  }
-  cache.set(key, { data, expires: Date.now() + ttlMs });
+  setCachePure(cache, key, data, ttlMs, Date.now());
 }
 
 const CACHE_QUOTE = 5 * 60_000;
@@ -144,83 +139,18 @@ const CACHE_FILINGS = 7 * 24 * 3600_000;
 
 // ── Rate Limiting ──────────────────────────────────────────
 
-interface ApiLimit {
-  type: "minute" | "daily" | "second";
-  limit: number;
-}
-
-const API_LIMITS: Record<string, ApiLimit> = {
-  yahoo: { type: "minute", limit: 60 },
-  finnhub: { type: "minute", limit: 60 },
-  fmp: { type: "daily", limit: 250 },
-  alphaVantage: { type: "daily", limit: 25 },
-  fred: { type: "minute", limit: 120 },
-  secEdgar: { type: "second", limit: 10 },
-};
-
-const windowCalls = new Map<string, number[]>();
-const dailyCalls = new Map<string, { date: string; count: number }>();
+const rateState = newRateState();
 
 function checkRate(api: string): boolean {
-  const limit = API_LIMITS[api];
-  if (!limit) return true;
-  const now = Date.now();
-
-  if (limit.type === "daily") {
-    const today = new Date().toISOString().slice(0, 10);
-    const entry = dailyCalls.get(api);
-    if (!entry || entry.date !== today) {
-      dailyCalls.set(api, { date: today, count: 0 });
-      return true;
-    }
-    return entry.count < limit.limit;
-  }
-
-  const windowMs = limit.type === "minute" ? 60_000 : 1_000;
-  const timestamps = windowCalls.get(api) || [];
-  const recent = timestamps.filter((t) => now - t < windowMs);
-  windowCalls.set(api, recent);
-  return recent.length < limit.limit;
+  return checkRatePure(rateState, api, Date.now());
 }
 
 function recordCall(api: string): void {
-  const limit = API_LIMITS[api];
-  if (!limit) return;
-
-  if (limit.type === "daily") {
-    const today = new Date().toISOString().slice(0, 10);
-    const entry = dailyCalls.get(api) || { date: today, count: 0 };
-    if (entry.date !== today) {
-      entry.date = today;
-      entry.count = 0;
-    }
-    entry.count++;
-    dailyCalls.set(api, entry);
-    return;
-  }
-
-  const timestamps = windowCalls.get(api) || [];
-  timestamps.push(Date.now());
-  windowCalls.set(api, timestamps);
+  recordCallPure(rateState, api, Date.now());
 }
 
 function getUsage(api: string): string {
-  const limit = API_LIMITS[api];
-  if (!limit) return "unknown";
-
-  if (limit.type === "daily") {
-    const today = new Date().toISOString().slice(0, 10);
-    const entry = dailyCalls.get(api);
-    const count = entry && entry.date === today ? entry.count : 0;
-    return `${count}/${limit.limit} today`;
-  }
-
-  const windowMs = limit.type === "minute" ? 60_000 : 1_000;
-  const timestamps = windowCalls.get(api) || [];
-  const now = Date.now();
-  const recent = timestamps.filter((t) => now - t < windowMs);
-  const unit = limit.type === "minute" ? "min" : "sec";
-  return `${recent.length}/${limit.limit} per ${unit}`;
+  return getUsagePure(rateState, api, Date.now());
 }
 
 // ── Fetch Helper ───────────────────────────────────────────
@@ -521,29 +451,7 @@ async function fetchAlphaVantageFundamentals(
   };
 }
 
-// ── Formatting ─────────────────────────────────────────────
-
-function fmtMoney(n: number): string {
-  if (Math.abs(n) >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
-  if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
-  return `$${n.toFixed(2)}`;
-}
-
-function fmtVol(v: number): string {
-  if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`;
-  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
-  if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
-  return String(v);
-}
-
-function fmtPct(p: number | null): string {
-  return p !== null && p !== undefined ? `${p.toFixed(2)}%` : "N/A";
-}
-
 // ── Tool: investment-fetch-quote ───────────────────────────
-
-const TICKER_RE = /^[A-Z][A-Z0-9.-]{0,9}$/;
 
 const FetchQuoteInput = {
   tickers: z
@@ -566,18 +474,9 @@ async function fetchQuote(params: {
   mode: string;
 }): Promise<string> {
   const deadline = Date.now() + REQUEST_TIMEOUT_MS;
-  const tickers = params.tickers
-    .split(",")
-    .map((t) => t.trim().toUpperCase())
-    .filter(Boolean);
-
-  if (tickers.length === 0) return "No valid tickers provided.";
-  if (tickers.length > 10) return "Maximum 10 tickers per request.";
-
-  for (const t of tickers) {
-    if (!TICKER_RE.test(t))
-      return `Invalid ticker: "${t}". Use uppercase, digits, dots, hyphens.`;
-  }
+  const parsed = parseTickers(params.tickers);
+  if (!parsed.ok) return parsed.error;
+  const tickers = parsed.items;
 
   const results: string[] = [];
 
@@ -691,8 +590,6 @@ async function fetchQuote(params: {
 
 // ── Tool: investment-fetch-economic ────────────────────────
 
-const SERIES_RE = /^[A-Z0-9_]{1,30}$/;
-
 const COMMON_SERIES: Record<string, string> = {
   GDP: "Real Gross Domestic Product",
   CPIAUCSL: "Consumer Price Index (All Urban)",
@@ -735,18 +632,9 @@ async function fetchEconomic(params: {
 }): Promise<string> {
   if (!FRED_KEY) return "FRED API key not configured. Economic data unavailable.";
 
-  const ids = params.series
-    .split(",")
-    .map((s) => s.trim().toUpperCase())
-    .filter(Boolean);
-
-  if (ids.length === 0) return "No valid series IDs provided.";
-  if (ids.length > 10) return "Maximum 10 series per request.";
-
-  for (const s of ids) {
-    if (!SERIES_RE.test(s))
-      return `Invalid series ID: "${s}". Use uppercase letters, digits, underscores.`;
-  }
+  const parsed = parseSeries(params.series);
+  if (!parsed.ok) return parsed.error;
+  const ids = parsed.items;
 
   const results: string[] = [];
 
@@ -826,10 +714,7 @@ async function getTickerMap(ua: Record<string, string>): Promise<Record<string, 
   )) as Record<string, { cik_str: number; ticker: string; title: string }>;
   recordCall("secEdgar");
 
-  const map: Record<string, string> = {};
-  for (const entry of Object.values(raw)) {
-    map[entry.ticker] = String(entry.cik_str).padStart(10, "0");
-  }
+  const map = buildTickerMap(raw);
 
   tickerMapCache = { data: map, expires: Date.now() + CACHE_CIK };
   return map;
@@ -908,13 +793,11 @@ async function fetchFilings(params: {
       const form = recent.form[i];
       if (params.form_type !== "ALL" && form !== params.form_type) continue;
 
-      const accNum = (recent.accessionNumber[i] || "").replace(/-/g, "").replace(/[^a-zA-Z0-9]/g, "");
       const accDash = recent.accessionNumber[i];
-      const doc = (recent.primaryDocument[i] || "").replace(/[^a-zA-Z0-9._-]/g, "");
       const filed = recent.filingDate[i];
       const report = recent.reportDate?.[i] || "N/A";
       const cik = String(data.cik || "").replace(/[^0-9]/g, "");
-      const url = `https://www.sec.gov/Archives/edgar/data/${cik}/${accNum}/${doc}`;
+      const url = buildFilingUrl(cik, recent.accessionNumber[i] || "", recent.primaryDocument[i] || "");
 
       lines.push(`### ${form} — Filed ${filed}`);
       lines.push(`  Report Date: ${report}`);
