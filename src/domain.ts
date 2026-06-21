@@ -37,9 +37,7 @@ export const SERIES_RE = /^[A-Z0-9_]{1,30}$/;
 export const MAX_TICKERS = 10;
 export const MAX_SERIES = 10;
 
-export type ParseResult =
-  | { ok: true; items: string[] }
-  | { ok: false; error: string };
+export type ParseResult = { ok: true; items: string[] } | { ok: false; error: string };
 
 /**
  * Parse a comma-separated tickers string exactly as fetchQuote() does:
@@ -52,8 +50,7 @@ export function parseTickers(raw: string): ParseResult {
     .filter(Boolean);
 
   if (items.length === 0) return { ok: false, error: "No valid tickers provided." };
-  if (items.length > MAX_TICKERS)
-    return { ok: false, error: "Maximum 10 tickers per request." };
+  if (items.length > MAX_TICKERS) return { ok: false, error: "Maximum 10 tickers per request." };
 
   for (const t of items) {
     if (!TICKER_RE.test(t))
@@ -75,8 +72,7 @@ export function parseSeries(raw: string): ParseResult {
     .filter(Boolean);
 
   if (items.length === 0) return { ok: false, error: "No valid series IDs provided." };
-  if (items.length > MAX_SERIES)
-    return { ok: false, error: "Maximum 10 series per request." };
+  if (items.length > MAX_SERIES) return { ok: false, error: "Maximum 10 series per request." };
 
   for (const s of items) {
     if (!SERIES_RE.test(s))
@@ -117,11 +113,7 @@ export function sanitizeDoc(doc: string): string {
 }
 
 /** Build the canonical SEC Archives URL for a filing document. */
-export function buildFilingUrl(
-  cikDigits: string,
-  accession: string,
-  doc: string,
-): string {
+export function buildFilingUrl(cikDigits: string, accession: string, doc: string): string {
   return `https://www.sec.gov/Archives/edgar/data/${cikDigits}/${sanitizeAccession(accession)}/${sanitizeDoc(doc)}`;
 }
 
@@ -259,11 +251,7 @@ export interface CacheEntry {
 export const MAX_CACHE_SIZE = 5_000;
 
 /** Read a cache entry, deleting and returning null if missing or expired. */
-export function getCached<T>(
-  cache: Map<string, CacheEntry>,
-  key: string,
-  now: number,
-): T | null {
+export function getCached<T>(cache: Map<string, CacheEntry>, key: string, now: number): T | null {
   const entry = cache.get(key);
   if (!entry || now > entry.expires) {
     cache.delete(key);
