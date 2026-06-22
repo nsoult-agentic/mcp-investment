@@ -231,6 +231,92 @@ interface FundamentalsData {
   source: string;
 }
 
+// ── External API response shapes ───────────────────────────
+// Minimal, defensive views over untyped third-party JSON: every field is
+// optional because the upstream payloads are not under our control. Only the
+// fields actually read are declared; values are validated/coerced at use.
+
+interface YahooMeta {
+  regularMarketPrice?: number;
+  previousClose?: number;
+  chartPreviousClose?: number;
+  shortName?: string;
+  longName?: string;
+  regularMarketVolume?: number;
+  regularMarketDayHigh?: number;
+  regularMarketDayLow?: number;
+  fiftyTwoWeekHigh?: number;
+  fiftyTwoWeekLow?: number;
+}
+
+interface YahooResponse {
+  chart?: { result?: Array<{ meta?: YahooMeta }> };
+}
+
+interface FinnhubQuote {
+  c?: number;
+  d?: number;
+  dp?: number;
+  h?: number;
+  l?: number;
+}
+
+interface FinnhubProfile {
+  name?: string;
+  marketCapitalization?: number;
+  finnhubIndustry?: string;
+}
+
+interface FinnhubMetricResponse {
+  metric?: Record<string, number | undefined>;
+}
+
+interface FmpQuote {
+  name?: string;
+  price?: number;
+  change?: number;
+  changesPercentage?: number;
+  volume?: number;
+  dayHigh?: number;
+  dayLow?: number;
+  yearHigh?: number;
+  yearLow?: number;
+  marketCap?: number;
+  pe?: number;
+}
+
+type AlphaVantageOverview = Record<string, string | undefined>;
+
+interface FredObservation {
+  date?: string;
+  value?: string;
+}
+
+interface FredObservationsResponse {
+  observations?: FredObservation[];
+}
+
+interface FredSeriesResponse {
+  seriess?: Array<{ title?: string }>;
+}
+
+interface EdgarRecentFilings {
+  form?: string[];
+  accessionNumber?: string[];
+  filingDate?: string[];
+  reportDate?: string[];
+  primaryDocument?: string[];
+}
+
+interface EdgarSubmissions {
+  name?: string;
+  cik?: string | number;
+  sic?: string;
+  sicDescription?: string;
+  stateOfIncorporation?: string;
+  filings?: { recent?: EdgarRecentFilings };
+}
+
 // ── API: Yahoo Finance (no key) ────────────────────────────
 
 async function fetchYahoo(ticker: string): Promise<QuoteData> {
@@ -239,19 +325,20 @@ async function fetchYahoo(ticker: string): Promise<QuoteData> {
   const data = (await apiFetch(
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1d`,
     { "User-Agent": "Mozilla/5.0 (compatible; PAI/1.0)" },
-  )) as any;
+  )) as YahooResponse;
   recordCall("yahoo");
 
   const meta = data?.chart?.result?.[0]?.meta;
   if (!meta?.regularMarketPrice) throw new Error("no data");
+  const price = meta.regularMarketPrice;
 
   const prev = meta.previousClose || meta.chartPreviousClose || 0;
   return {
     symbol: ticker,
     name: meta.shortName || meta.longName || ticker,
-    price: meta.regularMarketPrice,
-    change: prev ? meta.regularMarketPrice - prev : 0,
-    changePercent: prev ? ((meta.regularMarketPrice - prev) / prev) * 100 : 0,
+    price,
+    change: prev ? price - prev : 0,
+    changePercent: prev ? ((price - prev) / prev) * 100 : 0,
     volume: meta.regularMarketVolume || 0,
     dayHigh: meta.regularMarketDayHigh || 0,
     dayLow: meta.regularMarketDayLow || 0,
@@ -267,6 +354,25 @@ async function fetchYahoo(ticker: string): Promise<QuoteData> {
 
 // ── API: Finnhub ───────────────────────────────────────────
 
+/**
+ * Best-effort fetch of a Finnhub company profile (sector/industry/market cap).
+ * Rate-gated and failure-tolerant: returns null if rate limited or on any error,
+ * since the profile is always optional enrichment. Records the call on success.
+ */
+async function fetchFinnhubProfile(ticker: string, key: string): Promise<FinnhubProfile | null> {
+  if (!checkRate("finnhub")) return null;
+  try {
+    const profile = (await apiFetch(
+      `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(ticker)}`,
+      { "X-Finnhub-Token": key },
+    )) as FinnhubProfile;
+    recordCall("finnhub");
+    return profile;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchFinnhub(ticker: string): Promise<QuoteData> {
   if (!FINNHUB_KEY) throw new Error("no key");
   if (!checkRate("finnhub")) throw new Error("rate limited");
@@ -274,34 +380,24 @@ async function fetchFinnhub(ticker: string): Promise<QuoteData> {
   const quote = (await apiFetch(
     `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker)}`,
     { "X-Finnhub-Token": FINNHUB_KEY },
-  )) as any;
+  )) as FinnhubQuote;
   recordCall("finnhub");
 
   if (!quote?.c || quote.c === 0) throw new Error("no data");
+  const price = quote.c;
 
   let name = ticker;
   let marketCap: number | null = null;
-  const sector: string | null = null;
   let industry: string | null = null;
-  try {
-    if (checkRate("finnhub")) {
-      const profile = (await apiFetch(
-        `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(ticker)}`,
-        { "X-Finnhub-Token": FINNHUB_KEY },
-      )) as any;
-      recordCall("finnhub");
-      if (profile?.name) name = profile.name;
-      if (profile?.marketCapitalization) marketCap = profile.marketCapitalization * 1_000_000;
-      if (profile?.finnhubIndustry) industry = profile.finnhubIndustry;
-    }
-  } catch {
-    /* profile is optional */
-  }
+  const profile = await fetchFinnhubProfile(ticker, FINNHUB_KEY);
+  if (profile?.name) name = profile.name;
+  if (profile?.marketCapitalization) marketCap = profile.marketCapitalization * 1_000_000;
+  if (profile?.finnhubIndustry) industry = profile.finnhubIndustry;
 
   return {
     symbol: ticker,
     name,
-    price: quote.c,
+    price,
     change: quote.d || 0,
     changePercent: quote.dp || 0,
     volume: 0,
@@ -311,7 +407,7 @@ async function fetchFinnhub(ticker: string): Promise<QuoteData> {
     yearLow: 0,
     marketCap,
     pe: null,
-    sector,
+    sector: null,
     industry,
     source: "finnhub",
   };
@@ -325,16 +421,17 @@ async function fetchFMP(ticker: string): Promise<QuoteData> {
 
   const data = (await safeFetch(
     `https://financialmodelingprep.com/api/v3/quote/${encodeURIComponent(ticker)}?apikey=${FMP_KEY}`,
-  )) as any;
+  )) as FmpQuote | FmpQuote[];
   recordCall("fmp");
 
-  const q = Array.isArray(data) ? data[0] : data;
+  const q: FmpQuote | undefined = Array.isArray(data) ? data[0] : data;
   if (!q?.price) throw new Error("no data");
+  const price = q.price;
 
   return {
     symbol: ticker,
     name: q.name || ticker,
-    price: q.price,
+    price,
     change: q.change || 0,
     changePercent: q.changesPercentage || 0,
     volume: q.volume || 0,
@@ -359,40 +456,29 @@ async function fetchFinnhubFundamentals(ticker: string): Promise<FundamentalsDat
   const metrics = (await apiFetch(
     `https://finnhub.io/api/v1/stock/metric?symbol=${encodeURIComponent(ticker)}&metric=all`,
     { "X-Finnhub-Token": FINNHUB_KEY },
-  )) as any;
+  )) as FinnhubMetricResponse;
   recordCall("finnhub");
 
   const m = metrics?.metric;
   if (!m) throw new Error("no data");
 
   // Also fetch profile for sector/industry data
-  const sector: string | null = null;
   let industry: string | null = null;
-  try {
-    if (checkRate("finnhub")) {
-      const profile = (await apiFetch(
-        `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(ticker)}`,
-        { "X-Finnhub-Token": FINNHUB_KEY },
-      )) as any;
-      recordCall("finnhub");
-      if (profile?.finnhubIndustry) industry = profile.finnhubIndustry;
-    }
-  } catch {
-    /* profile is optional */
-  }
+  const profile = await fetchFinnhubProfile(ticker, FINNHUB_KEY);
+  if (profile?.finnhubIndustry) industry = profile.finnhubIndustry;
 
   return {
-    pe: m.peNormalizedAnnual || m.peTTM || null,
-    eps: m.epsNormalizedAnnual || m.epsTTM || null,
-    bookValue: m.bookValuePerShareAnnual || null,
-    dividendYield: m.dividendYieldIndicatedAnnual || null,
-    profitMargin: m.netProfitMarginTTM || null,
-    operatingMargin: m.operatingMarginTTM || null,
-    roe: m.roeTTM || null,
-    roa: m.roaTTM || null,
-    beta: m.beta || null,
-    analystTarget: m.targetMedianPrice || null,
-    sector,
+    pe: m["peNormalizedAnnual"] || m["peTTM"] || null,
+    eps: m["epsNormalizedAnnual"] || m["epsTTM"] || null,
+    bookValue: m["bookValuePerShareAnnual"] || null,
+    dividendYield: m["dividendYieldIndicatedAnnual"] || null,
+    profitMargin: m["netProfitMarginTTM"] || null,
+    operatingMargin: m["operatingMarginTTM"] || null,
+    roe: m["roeTTM"] || null,
+    roa: m["roaTTM"] || null,
+    beta: m["beta"] || null,
+    analystTarget: m["targetMedianPrice"] || null,
+    sector: null,
     industry,
     source: "finnhub",
   };
@@ -406,27 +492,34 @@ async function fetchAlphaVantageFundamentals(ticker: string): Promise<Fundamenta
 
   const data = (await safeFetch(
     `https://www.alphavantage.co/query?function=OVERVIEW&symbol=${encodeURIComponent(ticker)}&apikey=${ALPHA_VANTAGE_KEY}`,
-  )) as any;
+  )) as AlphaVantageOverview;
   recordCall("alphaVantage");
 
-  if (!data?.Symbol) throw new Error("no data");
+  if (!data?.["Symbol"]) throw new Error("no data");
 
-  const num = (v: string | undefined) => (v && v !== "None" && v !== "-" ? Number(v) : null);
+  const num = (v: string | undefined): number | null =>
+    v && v !== "None" && v !== "-" ? Number(v) : null;
+  // Convert an AlphaVantage fractional ratio (e.g. 0.21) to a percentage.
+  const pct = (v: string | undefined): number | null => {
+    const n = num(v);
+    return n !== null ? n * 100 : null;
+  };
 
+  const sectorRaw = data["Sector"];
+  const industryRaw = data["Industry"];
   return {
-    pe: num(data.PERatio),
-    eps: num(data.EPS),
-    bookValue: num(data.BookValue),
-    dividendYield: num(data.DividendYield) !== null ? num(data.DividendYield)! * 100 : null,
-    profitMargin: num(data.ProfitMargin) !== null ? num(data.ProfitMargin)! * 100 : null,
-    operatingMargin:
-      num(data.OperatingMarginTTM) !== null ? num(data.OperatingMarginTTM)! * 100 : null,
-    roe: num(data.ReturnOnEquityTTM) !== null ? num(data.ReturnOnEquityTTM)! * 100 : null,
-    roa: num(data.ReturnOnAssetsTTM) !== null ? num(data.ReturnOnAssetsTTM)! * 100 : null,
-    beta: num(data.Beta),
-    analystTarget: num(data.AnalystTargetPrice),
-    sector: data.Sector && data.Sector !== "None" ? data.Sector : null,
-    industry: data.Industry && data.Industry !== "None" ? data.Industry : null,
+    pe: num(data["PERatio"]),
+    eps: num(data["EPS"]),
+    bookValue: num(data["BookValue"]),
+    dividendYield: pct(data["DividendYield"]),
+    profitMargin: pct(data["ProfitMargin"]),
+    operatingMargin: pct(data["OperatingMarginTTM"]),
+    roe: pct(data["ReturnOnEquityTTM"]),
+    roa: pct(data["ReturnOnAssetsTTM"]),
+    beta: num(data["Beta"]),
+    analystTarget: num(data["AnalystTargetPrice"]),
+    sector: sectorRaw && sectorRaw !== "None" ? sectorRaw : null,
+    industry: industryRaw && industryRaw !== "None" ? industryRaw : null,
     source: "alpha-vantage",
   };
 }
@@ -447,102 +540,122 @@ const FetchQuoteInput = {
 
 const REQUEST_TIMEOUT_MS = 60_000; // 60s global timeout per tool call
 
+/** Resolve a quote for one ticker via the cache then Yahoo → Finnhub → FMP. */
+async function resolveQuote(ticker: string): Promise<QuoteData | null> {
+  const cacheKey = `quote:${ticker}`;
+  const cached = getCached<QuoteData>(cacheKey);
+  if (cached) return cached;
+
+  for (const fetcher of [fetchYahoo, fetchFinnhub, fetchFMP]) {
+    try {
+      const quote = await fetcher(ticker);
+      setCache(cacheKey, quote, CACHE_QUOTE);
+      return quote;
+    } catch {
+      /* try next source */
+    }
+  }
+  return null;
+}
+
+/** Resolve fundamentals for one ticker via the cache then Finnhub → AlphaVantage. */
+async function resolveFundamentals(ticker: string): Promise<FundamentalsData | null> {
+  const fundKey = `fund:${ticker}`;
+  const cached = getCached<FundamentalsData>(fundKey);
+  if (cached) return cached;
+
+  for (const fetcher of [fetchFinnhubFundamentals, fetchAlphaVantageFundamentals]) {
+    try {
+      const fund = await fetcher(ticker);
+      setCache(fundKey, fund, CACHE_FUNDAMENTALS);
+      return fund;
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
+/** Format the primary quote block (price + optional day/year/cap/sector). */
+function formatQuote(quote: QuoteData): string[] {
+  const sign = quote.change >= 0 ? "+" : "";
+  const lines = [
+    `## ${quote.symbol} — ${quote.name}`,
+    `Price: $${quote.price.toFixed(2)} (${sign}$${quote.change.toFixed(2)}, ${sign}${quote.changePercent.toFixed(2)}%)`,
+  ];
+
+  if (quote.volume > 0) lines.push(`Volume: ${fmtVol(quote.volume)}`);
+  if (quote.dayHigh > 0)
+    lines.push(`Day Range: $${quote.dayLow.toFixed(2)} — $${quote.dayHigh.toFixed(2)}`);
+  if (quote.yearHigh > 0)
+    lines.push(`52-Week: $${quote.yearLow.toFixed(2)} — $${quote.yearHigh.toFixed(2)}`);
+  if (quote.marketCap) lines.push(`Market Cap: ${fmtMoney(quote.marketCap)}`);
+  if (quote.pe) lines.push(`P/E: ${quote.pe.toFixed(1)}`);
+  if (quote.sector || quote.industry) {
+    const parts = [quote.sector, quote.industry].filter(Boolean);
+    lines.push(`Sector: ${parts.join(" / ")}`);
+  }
+  lines.push(`Source: ${quote.source}`);
+  return lines;
+}
+
+/** Format the fundamentals block appended in `full` mode. */
+function formatFundamentals(fund: FundamentalsData): string[] {
+  const lines: string[] = ["", "### Fundamentals"];
+  if (fund.pe !== null) lines.push(`P/E Ratio: ${fund.pe.toFixed(1)}`);
+  if (fund.eps !== null) lines.push(`EPS: $${fund.eps.toFixed(2)}`);
+  if (fund.bookValue !== null) lines.push(`Book Value: $${fund.bookValue.toFixed(2)}`);
+  if (fund.profitMargin !== null) lines.push(`Profit Margin: ${fmtPct(fund.profitMargin)}`);
+  if (fund.operatingMargin !== null)
+    lines.push(`Operating Margin: ${fmtPct(fund.operatingMargin)}`);
+  if (fund.roe !== null) lines.push(`Return on Equity: ${fmtPct(fund.roe)}`);
+  if (fund.roa !== null) lines.push(`Return on Assets: ${fmtPct(fund.roa)}`);
+  if (fund.beta !== null) lines.push(`Beta: ${fund.beta.toFixed(2)}`);
+  if (fund.dividendYield !== null) lines.push(`Dividend Yield: ${fmtPct(fund.dividendYield)}`);
+  if (fund.analystTarget !== null) lines.push(`Analyst Target: $${fund.analystTarget.toFixed(2)}`);
+  if (fund.sector || fund.industry) {
+    const parts = [fund.sector, fund.industry].filter(Boolean);
+    lines.push(`Sector: ${parts.join(" / ")}`);
+  }
+  lines.push(`Source: ${fund.source}`);
+  return lines;
+}
+
+/** Build the full per-ticker section (quote + optional fundamentals). */
+async function buildTickerSection(ticker: string, mode: string): Promise<string> {
+  const quote = await resolveQuote(ticker);
+  if (!quote) {
+    return `## ${ticker}\nUnable to fetch quote — all sources failed or rate limited.`;
+  }
+
+  const lines = formatQuote(quote);
+
+  if (mode === "full") {
+    const fund = await resolveFundamentals(ticker);
+    if (fund) {
+      lines.push(...formatFundamentals(fund));
+    } else {
+      lines.push("", "### Fundamentals", "Unavailable — sources failed or rate limited.");
+    }
+  }
+
+  return lines.join("\n");
+}
+
 async function fetchQuote(params: { tickers: string; mode: string }): Promise<string> {
   const deadline = Date.now() + REQUEST_TIMEOUT_MS;
   const parsed = parseTickers(params.tickers);
   if (!parsed.ok) return parsed.error;
-  const tickers = parsed.items;
 
   const results: string[] = [];
-
-  for (const ticker of tickers) {
+  for (const ticker of parsed.items) {
     if (Date.now() > deadline) {
       results.push(
         `## ${ticker}\nSkipped — request timeout reached (${REQUEST_TIMEOUT_MS / 1000}s).`,
       );
       continue;
     }
-    const cacheKey = `quote:${ticker}`;
-    let quote = getCached<QuoteData>(cacheKey);
-
-    if (!quote) {
-      for (const fetcher of [fetchYahoo, fetchFinnhub, fetchFMP]) {
-        try {
-          quote = await fetcher(ticker);
-          setCache(cacheKey, quote, CACHE_QUOTE);
-          break;
-        } catch {
-          /* try next source */
-        }
-      }
-    }
-
-    if (!quote) {
-      results.push(`## ${ticker}\nUnable to fetch quote — all sources failed or rate limited.`);
-      continue;
-    }
-
-    const sign = quote.change >= 0 ? "+" : "";
-    const lines = [
-      `## ${quote.symbol} — ${quote.name}`,
-      `Price: $${quote.price.toFixed(2)} (${sign}$${quote.change.toFixed(2)}, ${sign}${quote.changePercent.toFixed(2)}%)`,
-    ];
-
-    if (quote.volume > 0) lines.push(`Volume: ${fmtVol(quote.volume)}`);
-    if (quote.dayHigh > 0)
-      lines.push(`Day Range: $${quote.dayLow.toFixed(2)} — $${quote.dayHigh.toFixed(2)}`);
-    if (quote.yearHigh > 0)
-      lines.push(`52-Week: $${quote.yearLow.toFixed(2)} — $${quote.yearHigh.toFixed(2)}`);
-    if (quote.marketCap) lines.push(`Market Cap: ${fmtMoney(quote.marketCap)}`);
-    if (quote.pe) lines.push(`P/E: ${quote.pe.toFixed(1)}`);
-    if (quote.sector || quote.industry) {
-      const parts = [quote.sector, quote.industry].filter(Boolean);
-      lines.push(`Sector: ${parts.join(" / ")}`);
-    }
-    lines.push(`Source: ${quote.source}`);
-
-    if (params.mode === "full") {
-      const fundKey = `fund:${ticker}`;
-      let fund = getCached<FundamentalsData>(fundKey);
-
-      if (!fund) {
-        for (const fetcher of [fetchFinnhubFundamentals, fetchAlphaVantageFundamentals]) {
-          try {
-            fund = await fetcher(ticker);
-            setCache(fundKey, fund, CACHE_FUNDAMENTALS);
-            break;
-          } catch {
-            /* try next */
-          }
-        }
-      }
-
-      if (fund) {
-        lines.push("", "### Fundamentals");
-        if (fund.pe !== null) lines.push(`P/E Ratio: ${fund.pe.toFixed(1)}`);
-        if (fund.eps !== null) lines.push(`EPS: $${fund.eps.toFixed(2)}`);
-        if (fund.bookValue !== null) lines.push(`Book Value: $${fund.bookValue.toFixed(2)}`);
-        if (fund.profitMargin !== null) lines.push(`Profit Margin: ${fmtPct(fund.profitMargin)}`);
-        if (fund.operatingMargin !== null)
-          lines.push(`Operating Margin: ${fmtPct(fund.operatingMargin)}`);
-        if (fund.roe !== null) lines.push(`Return on Equity: ${fmtPct(fund.roe)}`);
-        if (fund.roa !== null) lines.push(`Return on Assets: ${fmtPct(fund.roa)}`);
-        if (fund.beta !== null) lines.push(`Beta: ${fund.beta.toFixed(2)}`);
-        if (fund.dividendYield !== null)
-          lines.push(`Dividend Yield: ${fmtPct(fund.dividendYield)}`);
-        if (fund.analystTarget !== null)
-          lines.push(`Analyst Target: $${fund.analystTarget.toFixed(2)}`);
-        if (fund.sector || fund.industry) {
-          const parts = [fund.sector, fund.industry].filter(Boolean);
-          lines.push(`Sector: ${parts.join(" / ")}`);
-        }
-        lines.push(`Source: ${fund.source}`);
-      } else {
-        lines.push("", "### Fundamentals", "Unavailable — sources failed or rate limited.");
-      }
-    }
-
-    results.push(lines.join("\n"));
+    results.push(await buildTickerSection(ticker, params.mode));
   }
 
   return results.join("\n\n");
@@ -586,68 +699,95 @@ const FetchEconomicInput = {
     .describe("Data points per series (default: 6)"),
 };
 
+interface EconSeries {
+  title: string;
+  observations: Array<{ date: string; value: string }>;
+}
+
+/** Look up a human-readable title for a FRED series (optional best-effort). */
+async function fetchSeriesTitle(seriesId: string, fredKey: string): Promise<string> {
+  let title = COMMON_SERIES[seriesId] || seriesId;
+  try {
+    if (checkRate("fred")) {
+      const info = (await safeFetch(
+        `https://api.stlouisfed.org/fred/series?series_id=${seriesId}&api_key=${fredKey}&file_type=json`,
+      )) as FredSeriesResponse;
+      recordCall("fred");
+      const infoTitle = info?.seriess?.[0]?.title;
+      if (infoTitle) title = infoTitle;
+    }
+  } catch {
+    /* title lookup is optional */
+  }
+  return title;
+}
+
+/** Fetch + cache one FRED series' observations. Returns null on fetch failure. */
+async function fetchEconSeries(
+  seriesId: string,
+  observations: number,
+  fredKey: string,
+): Promise<EconSeries | null> {
+  const cacheKey = `econ:${seriesId}:${observations}`;
+  const cached = getCached<EconSeries>(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const obsData = (await safeFetch(
+      `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${fredKey}&file_type=json&sort_order=desc&limit=${observations}`,
+    )) as FredObservationsResponse;
+    recordCall("fred");
+
+    const title = await fetchSeriesTitle(seriesId, fredKey);
+    const obs = (obsData?.observations || [])
+      .filter(
+        (o: FredObservation): o is { date: string; value: string } =>
+          typeof o.value === "string" && typeof o.date === "string" && o.value !== ".",
+      )
+      .map((o) => ({ date: o.date, value: o.value }));
+
+    const result: EconSeries = { title, observations: obs };
+    setCache(cacheKey, result, CACHE_ECONOMIC);
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+/** Render one resolved FRED series to markdown. */
+function formatEconSeries(seriesId: string, series: EconSeries): string {
+  const lines = [`## ${seriesId} — ${series.title}`];
+  if (series.observations.length === 0) {
+    lines.push("No observations available.");
+  } else {
+    for (const obs of series.observations) {
+      lines.push(`  ${obs.date}: ${obs.value}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 async function fetchEconomic(params: { series: string; observations: number }): Promise<string> {
   if (!FRED_KEY) return "FRED API key not configured. Economic data unavailable.";
 
   const parsed = parseSeries(params.series);
   if (!parsed.ok) return parsed.error;
-  const ids = parsed.items;
 
   const results: string[] = [];
-
-  for (const seriesId of ids) {
+  for (const seriesId of parsed.items) {
     const cacheKey = `econ:${seriesId}:${params.observations}`;
-    let cached = getCached<{
-      title: string;
-      observations: Array<{ date: string; value: string }>;
-    }>(cacheKey);
-
-    if (!cached) {
-      if (!checkRate("fred")) {
-        results.push(`## ${seriesId}\nRate limited — try again in a minute.`);
-        continue;
-      }
-
-      try {
-        const obsData = (await safeFetch(
-          `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${FRED_KEY}&file_type=json&sort_order=desc&limit=${params.observations}`,
-        )) as any;
-        recordCall("fred");
-
-        let title = COMMON_SERIES[seriesId] || seriesId;
-        try {
-          if (checkRate("fred")) {
-            const info = (await safeFetch(
-              `https://api.stlouisfed.org/fred/series?series_id=${seriesId}&api_key=${FRED_KEY}&file_type=json`,
-            )) as any;
-            recordCall("fred");
-            if (info?.seriess?.[0]?.title) title = info.seriess[0].title;
-          }
-        } catch {
-          /* title lookup is optional */
-        }
-
-        const observations = (obsData?.observations || [])
-          .filter((o: any) => o.value !== ".")
-          .map((o: any) => ({ date: o.date as string, value: o.value as string }));
-
-        cached = { title, observations };
-        setCache(cacheKey, cached, CACHE_ECONOMIC);
-      } catch {
-        results.push(`## ${seriesId}\nFailed to fetch data from FRED.`);
-        continue;
-      }
+    const isCached = getCached<EconSeries>(cacheKey) !== null;
+    if (!isCached && !checkRate("fred")) {
+      results.push(`## ${seriesId}\nRate limited — try again in a minute.`);
+      continue;
     }
 
-    const lines = [`## ${seriesId} — ${cached.title}`];
-    if (cached.observations.length === 0) {
-      lines.push("No observations available.");
-    } else {
-      for (const obs of cached.observations) {
-        lines.push(`  ${obs.date}: ${obs.value}`);
-      }
+    const series = await fetchEconSeries(seriesId, params.observations, FRED_KEY);
+    if (!series) {
+      results.push(`## ${seriesId}\nFailed to fetch data from FRED.`);
+      continue;
     }
-    results.push(lines.join("\n"));
+    results.push(formatEconSeries(seriesId, series));
   }
 
   return results.join("\n\n");
@@ -697,6 +837,66 @@ const FetchFilingsInput = {
     .describe("Number of filings (default: 3, max: 10)"),
 };
 
+/** Resolve a ticker to its zero-padded CIK, or undefined if not listed. */
+async function resolveCik(ticker: string, ua: Record<string, string>): Promise<string | undefined> {
+  const map = await getTickerMap(ua);
+  return map[ticker];
+}
+
+/** Render a single filing entry (index `i` into the parallel `recent.*` arrays). */
+function formatFilingEntry(
+  recent: EdgarRecentFilings,
+  i: number,
+  form: string,
+  cikDigits: string,
+): string[] {
+  const accDash = recent.accessionNumber?.[i] ?? "";
+  const filed = recent.filingDate?.[i] || "N/A";
+  const report = recent.reportDate?.[i] || "N/A";
+  const url = buildFilingUrl(cikDigits, accDash, recent.primaryDocument?.[i] || "");
+  return [
+    `### ${form} — Filed ${filed}`,
+    `  Report Date: ${report}`,
+    `  Accession: ${accDash}`,
+    `  URL: ${url}`,
+    "",
+  ];
+}
+
+/**
+ * Render the filings section for an EDGAR submissions payload. Pure formatting:
+ * iterates the parallel `recent.*` arrays, filters by form type, and emits up to
+ * `count` entries. Indexed access is guarded (noUncheckedIndexedAccess).
+ */
+function formatFilings(
+  ticker: string,
+  data: EdgarSubmissions,
+  recent: EdgarRecentFilings,
+  formType: string,
+  count: number,
+): string {
+  const forms = recent.form ?? [];
+  const cikDigits = String(data.cik ?? "").replace(/[^0-9]/g, "");
+  const lines = [
+    `## ${ticker} — ${data.name || ticker}`,
+    `CIK: ${data.cik} | SIC: ${data.sic || "N/A"} (${data.sicDescription || "N/A"}) | State: ${data.stateOfIncorporation || "N/A"}`,
+    "",
+  ];
+
+  let found = 0;
+  for (let i = 0; i < forms.length && found < count; i++) {
+    const form = forms[i];
+    if (form === undefined) continue;
+    if (formType !== "ALL" && form !== formType) continue;
+
+    lines.push(...formatFilingEntry(recent, i, form, cikDigits));
+    found++;
+  }
+
+  if (found === 0) lines.push(`No ${formType} filings found.`);
+  return lines.join("\n");
+}
+
 async function fetchFilings(params: {
   ticker: string;
   form_type: string;
@@ -712,8 +912,7 @@ async function fetchFilings(params: {
   // Step 1: ticker → CIK (cached map, refreshed every 24h)
   let cik: string | undefined;
   try {
-    const map = await getTickerMap(UA);
-    cik = map[ticker];
+    cik = await resolveCik(ticker, UA);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[edgar] CIK lookup failed: ${msg}`);
@@ -726,44 +925,16 @@ async function fetchFilings(params: {
   if (!checkRate("secEdgar")) return "SEC EDGAR rate limited — try again shortly.";
 
   try {
-    const data = (await apiFetch(`https://data.sec.gov/submissions/CIK${cik}.json`, UA)) as any;
+    const data = (await apiFetch(
+      `https://data.sec.gov/submissions/CIK${cik}.json`,
+      UA,
+    )) as EdgarSubmissions;
     recordCall("secEdgar");
 
     const recent = data?.filings?.recent;
     if (!recent?.form) return `No filings found for ${ticker}.`;
 
-    const lines = [
-      `## ${ticker} — ${data.name || ticker}`,
-      `CIK: ${data.cik} | SIC: ${data.sic || "N/A"} (${data.sicDescription || "N/A"}) | State: ${data.stateOfIncorporation || "N/A"}`,
-      "",
-    ];
-
-    let found = 0;
-    for (let i = 0; i < recent.form.length && found < params.count; i++) {
-      const form = recent.form[i];
-      if (params.form_type !== "ALL" && form !== params.form_type) continue;
-
-      const accDash = recent.accessionNumber[i];
-      const filed = recent.filingDate[i];
-      const report = recent.reportDate?.[i] || "N/A";
-      const cik = String(data.cik || "").replace(/[^0-9]/g, "");
-      const url = buildFilingUrl(
-        cik,
-        recent.accessionNumber[i] || "",
-        recent.primaryDocument[i] || "",
-      );
-
-      lines.push(`### ${form} — Filed ${filed}`);
-      lines.push(`  Report Date: ${report}`);
-      lines.push(`  Accession: ${accDash}`);
-      lines.push(`  URL: ${url}`);
-      lines.push("");
-      found++;
-    }
-
-    if (found === 0) lines.push(`No ${params.form_type} filings found.`);
-
-    const result = lines.join("\n");
+    const result = formatFilings(ticker, data, recent, params.form_type, params.count);
     setCache(cacheKey, result, CACHE_FILINGS);
     return result;
   } catch {
@@ -870,9 +1041,9 @@ const httpServer = Bun.serve({
         return new Response("Rate limit exceeded", { status: 429 });
       }
       const server = createServer();
-      const transport = new WebStandardStreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-      });
+      // Stateless mode: omitting sessionIdGenerator (read as undefined by the SDK)
+      // disables session management — a fresh transport is used per request.
+      const transport = new WebStandardStreamableHTTPServerTransport({});
       await server.connect(transport);
       return transport.handleRequest(req);
     }

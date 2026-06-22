@@ -133,7 +133,7 @@ export const API_LIMITS: Record<string, ApiLimit> = {
   secEdgar: { type: "second", limit: 10 },
 };
 
-export interface DailyEntry {
+interface DailyEntry {
   date: string;
   count: number;
 }
@@ -233,7 +233,9 @@ export function isRateLimited(
   limit = REQUEST_RATE_LIMIT,
   windowMs = REQUEST_RATE_WINDOW_MS,
 ): boolean {
-  while (timestamps.length > 0 && timestamps[0]! < now - windowMs) {
+  while (timestamps.length > 0) {
+    const oldest = timestamps[0];
+    if (oldest === undefined || oldest >= now - windowMs) break;
     timestamps.shift();
   }
   if (timestamps.length >= limit) return true;
@@ -248,7 +250,7 @@ export interface CacheEntry {
   expires: number;
 }
 
-export const MAX_CACHE_SIZE = 5_000;
+const MAX_CACHE_SIZE = 5_000;
 
 /** Read a cache entry, deleting and returning null if missing or expired. */
 export function getCached<T>(cache: Map<string, CacheEntry>, key: string, now: number): T | null {
