@@ -499,7 +499,7 @@ async function fetchAlphaVantageFundamentals(ticker: string): Promise<Fundamenta
 
   const num = (v: string | undefined): number | null =>
     v && v !== "None" && v !== "-" ? Number(v) : null;
-  // Convert a FRED/AlphaVantage fractional ratio (e.g. 0.21) to a percentage.
+  // Convert an AlphaVantage fractional ratio (e.g. 0.21) to a percentage.
   const pct = (v: string | undefined): number | null => {
     const n = num(v);
     return n !== null ? n * 100 : null;
