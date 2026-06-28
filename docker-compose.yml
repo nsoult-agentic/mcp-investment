@@ -14,6 +14,8 @@ services:
     restart: unless-stopped
 
     # ── Network ──
+    networks:
+      - mcp_network  # NPM proxy (mcp-investment.stabpablo.eu) resolves this container by name
     ports:
       - "127.0.0.1:8901:8901"  # Loopback ONLY — no external access
 
@@ -52,3 +54,7 @@ services:
       - SECRETS_DIR=/secrets
       - PORT=8901
       # NEVER put API keys here — read from /secrets/ files
+
+networks:
+  mcp_network:
+    external: true
